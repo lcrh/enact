@@ -64,25 +64,23 @@ class Agent(Generic[DataT], enact.Resource):
       self,
       node_id_like: node_api.NodeIdLike,
       environment: environments.Environment,
-      *args: DataT,
-      **kwargs: DataT) -> DataT:
+      arg: Optional[DataT]=None) -> DataT:
     """Run an agent's post handler at a given ID."""
     if not isinstance(node_id_like, node_api.NodeId):
       node_id_like = node_api.NodeId(node_id_like)
     with environment:
-      return await self.agent_node().post(node_id_like, *args, **kwargs)
+      return await self.agent_node().post(node_id_like, arg)
 
   async def get(
       self,
       node_id_like: node_api.NodeIdLike,
       environment: environments.Environment,
-      *args: DataT,
-      **kwargs: DataT) -> DataT:
+      arg: Optional[DataT]=None) -> DataT:
     """Run an agent's get handler at a given ID."""
     if not isinstance(node_id_like, node_api.NodeId):
       node_id_like = node_api.NodeId(node_id_like)
     with environment:
-      return await self.agent_node().get(node_id_like, *args, **kwargs)
+      return await self.agent_node().get(node_id_like, arg)
 
   async def list(
       self,

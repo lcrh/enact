@@ -299,52 +299,10 @@ NodeT = TypeVar('NodeT', bound='NodeSchema')
 
 @enact.register
 @dataclasses.dataclass
-class Parameter(enact.Resource):
-  """Represents the type of a function argument.
+class Signature(Generic[DataT], enact.Resource):
+  input_type: Type[DataT]
+  output_type: Type[DataT]
 
-  A parameter has a name and a type descriptor. The Parameter class accepts the
-  generic type DataTypeT, which is used to specify the type language used to
-  specify the parameter.
-
-  Example:
-    An int parameter named 'p' in a setting where parameters can be either int
-    or str:
-      p: Parameter[Union[Type[int], Type[str]]] = Parameter('p', int)
-
-    Instances of a custom descriptor class are used to denote parameter type
-    information, and the provided parameter is a number between 0 and 10.
-      p: Parameter[CustomDescriptor] = Parameter(
-        'p', CustomDescriptor(min=0, max=10))
-
-  """
-  name: str
-  type: enact.TypeDescriptor
-
-
-@enact.register
-@dataclasses.dataclass
-class Signature(enact.Resource):
-  """Represents a function signature.
-
-  Function signatures accept a generic type DataTypeT, which is used to specify
-  the 'type language' that is used to specify the function signature.
-
-  Examples:
-    Signature[Type]: A signature that uses python types to describe types.
-    Signature[CustomDescriptor]: A signature that uses instances of a custom
-      descriptor task to specify types.
-  """
-  parameters: List[Parameter]
-  return_type: enact.TypeDescriptor
-
-  def get_callargs(self, *args: DataT, **kwargs: DataT) -> Dict[str, DataT]:
-    """Convert call arguments to a call-args dictionary."""
-    arg_dict = {p.name: arg for p, arg in zip(self.parameters, args)}
-    for k in kwargs:
-      if k in arg_dict:
-        raise ValueError(f'Overlap in args and kwargs: {k}')
-    arg_dict.update(kwargs)
-    return arg_dict
 
 
 @enact.register
@@ -514,10 +472,10 @@ def is_subschema(s1: NodeSchema, s2: NodeSchema) -> bool:
 
 
 FutureListHandler = Callable[['NodeId', Future[List[NodeId]]], None]
-FutureHandler = Callable[['NodeId', Future, Mapping[str, Any]], None]
+FutureHandler = Callable[['NodeId', Future, Any], None]
 
 ListHandler = Callable[['NodeId'], Awaitable[List[NodeId]]]
-Handler = Callable[['NodeId', Mapping[str, Any]], Awaitable[Any]]
+Handler = Callable[['NodeId', Any], Awaitable[Any]]
 
 
 @enact.register
@@ -559,8 +517,7 @@ class FutureNode(NodeSchema[DataT]):
     self.get_handler = handler
     self.get_signature = signature
 
-  def get(self, node_id: NodeId, future: Future,
-          *args: DataT, **kwargs: DataT):
+  def get(self, node_id: NodeId, future: Future, arg: DataT):
     """Get results from a node."""
     node = self.find(node_id)
     if not node.get_handler:
@@ -568,11 +525,9 @@ class FutureNode(NodeSchema[DataT]):
     handler = node.get_handler
     if not node.get_signature:
       raise ValueError(f'No signature for {node_id}')
-    callargs = node.get_signature.get_callargs(*args, **kwargs)
-    handler(node_id, future, callargs)
+    handler(node_id, future, arg)
 
-  def post(self, node_id: NodeId, future: Future,
-           *args: DataT, **kwargs: DataT):
+  def post(self, node_id: NodeId, future: Future, arg: DataT):
     """Post data to a node."""
     node = self.find(node_id)
     if not node.post_handler:
@@ -580,8 +535,7 @@ class FutureNode(NodeSchema[DataT]):
     handler = node.post_handler
     if not node.post_signature:
       raise ValueError(f'No signature for {node_id}')
-    callargs = node.post_signature.get_callargs(*args, **kwargs)
-    handler(node_id, future, callargs)
+    handler(node_id, future, arg)
 
   def list(self, node_id: NodeId, future: Future):
     """List node elements."""
@@ -631,7 +585,7 @@ class AsyncNode(NodeSchema[DataT]):
     self.get_handler = handler
     self.get_signature = signature
 
-  async def get(self, node_id: NodeId, *args: DataT, **kwargs: DataT) -> DataT:
+  async def get(self, node_id: NodeId, arg: DataT) -> DataT:
     """Get results from a node."""
     node = self.find(node_id)
     if not node.get_handler:
@@ -639,10 +593,9 @@ class AsyncNode(NodeSchema[DataT]):
     handler = node.get_handler
     if not node.get_signature:
       raise ValueError(f'No signature for {node_id}')
-    callargs = node.get_signature.get_callargs(*args, **kwargs)
-    return await handler(node_id, callargs)
+    return await handler(node_id, arg)
 
-  async def post(self, node_id: NodeId, *args: DataT, **kwargs: DataT) -> DataT:
+  async def post(self, node_id: NodeId, arg: DataT) -> DataT:
     """Post data to a node."""
     node = self.find(node_id)
     if not node.post_handler:
@@ -650,8 +603,7 @@ class AsyncNode(NodeSchema[DataT]):
     handler = node.post_handler
     if not node.post_signature:
       raise ValueError(f'No signature for {node_id}')
-    callargs = node.post_signature.get_callargs(*args, **kwargs)
-    return await handler(node_id, callargs)
+    return await handler(node_id, arg)
 
   async def list(self, node_id: NodeId):
     """List node elements."""
