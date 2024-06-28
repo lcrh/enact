@@ -57,6 +57,7 @@ import dataclasses
 import enum
 import functools
 import re
+import textwrap
 from typing import (
   Any, Awaitable, Callable, Dict, Generic, Iterable, List, Mapping, Optional,
   Tuple, Type, TypeVar, Union, cast)
@@ -110,6 +111,11 @@ class Future(Generic[DataT], abc.ABC):
   @abc.abstractmethod
   async def result(self) -> DataT:
     """Get the result of the future."""
+
+  @abc.abstractmethod
+  def done(self) -> bool:
+    """Check if the future is done."""
+
 
 
 @enact.register
@@ -246,6 +252,12 @@ class NodeId(enact.ImmutableResource):
       f'Expected pattern {pattern}, got {self}')
     return match
 
+  def strip_prefix(self, prefix: 'NodeId') -> Optional['NodeId']:
+    """Strip a prefix or return None if prefix is not shared."""
+    if not self.id_str.startswith(prefix.id_str):
+      return None
+    return NodeId(self.id_str[len(prefix.id_str) + 1:])
+
   def matches(self, pattern: str) -> Optional[Tuple[str,...]]:
     """Check if the node ID matches a pattern with '*' placeholders.
 
@@ -299,10 +311,20 @@ NodeT = TypeVar('NodeT', bound='NodeSchema')
 
 @enact.register
 @dataclasses.dataclass
-class Signature(Generic[DataT], enact.Resource):
-  input_type: Type[DataT]
-  output_type: Type[DataT]
+class Signature(enact.Resource):
+  """Signature of a node API call."""
+  input_type_descriptor: enact.TypeDescriptor
+  output_type_descriptor: enact.TypeDescriptor
 
+  @staticmethod
+  def from_types(input_type: Type, output_type: Type):
+    return Signature(
+      input_type_descriptor=enact.from_python_type(input_type),
+      output_type_descriptor=enact.from_python_type(output_type))
+
+  def pformat(self, name: str):
+    return (f'{name}({self.input_type_descriptor.pformat()}) -> '
+            f'{self.output_type_descriptor.pformat()}')
 
 
 @enact.register
@@ -336,7 +358,31 @@ class NodeSchema(Generic[DataT], enact.Resource):
 
   get_signature: Optional[Signature] = None
 
+  listable: bool = False
+
   element_type: Optional['NodeSchema[DataT]'] = None
+
+  description: Optional[str] = None
+
+  def pformat(self, name: str='root', indent='  ') -> str:
+    """Pretty print this schema."""
+    parts = []
+    if self.post_signature:
+      parts.append(
+        textwrap.indent(self.post_signature.pformat('POST'), indent))
+    if self.get_signature:
+      parts.append(
+        textwrap.indent(self.get_signature.pformat('GET'), indent))
+    if self.listable:
+      textwrap.indent('LIST()', indent)
+    for k, v in self.attributes.items():
+      parts.append(textwrap.indent(v.pformat(f'.{k}', indent), indent))
+    if self.element_type:
+      parts.append(
+        textwrap.indent(self.element_type.pformat('/*'), indent))
+    if not parts:
+      return f'{name}'
+    return '\n'.join([f'{name}'] + parts)
 
   def add_attribute(self: NodeT,
                     name: str,
@@ -400,7 +446,7 @@ class NodeSchema(Generic[DataT], enact.Resource):
         if add:
           self.add_attribute(attribute)
         else:
-          raise ValueError(f'No such attribute {attribute}: {node_id}"')
+          raise ValueError(f'No such attribute "{attribute}": {node_id}"')
       # pylint: disable=protected-access
       return cast(
         NodeT, self.attributes[attribute]._find(node_id, add, next_sep))
@@ -419,8 +465,8 @@ class NodeSchema(Generic[DataT], enact.Resource):
     return cls()
 
   @classmethod
-  def copy_from(cls: Type[NodeT], value: NodeT) -> NodeT:
-    """Copy common fields from another schema."""
+  def copy_from(cls: Type[NodeT], value: 'NodeSchema') -> NodeT:
+    """Copy common fields from another schema, ignoring handlers."""
     attributes: Dict[str, NodeT] = {}
     for k, v in value.attributes.items():
       attributes[k] = cls.copy_from(cast(NodeT, v))
@@ -428,8 +474,10 @@ class NodeSchema(Generic[DataT], enact.Resource):
     if value.element_type:
       element_type = cls.copy_from(cast(NodeT, value.element_type))
     return cls(
+      description=value.description,
       attributes=attributes,
       element_type=element_type,
+      listable=value.listable,
       post_signature=copy.deepcopy(value.post_signature),
       get_signature=copy.deepcopy(value.get_signature))
 
@@ -446,11 +494,11 @@ class NodeSchema(Generic[DataT], enact.Resource):
     return NodeSchema.copy_from(self)
 
 
-
 def is_subschema(s1: NodeSchema, s2: NodeSchema) -> bool:
   """Returns whether s1 is a subschema of s2.
 
-  A schema s1 is a subschema of s2 if every path in s1 is also a path in s2.
+  A schema s1 is a subschema of s2 if any request supported by s1 is also
+  supported by s2.
 
   Returns:
     True if s1 is a subschema of s2.
@@ -458,6 +506,8 @@ def is_subschema(s1: NodeSchema, s2: NodeSchema) -> bool:
   if s1.get_signature and s1.get_signature != s2.get_signature:
     return False
   if s1.post_signature and s1.post_signature != s2.post_signature:
+    return False
+  if s1.listable and not s2.listable:
     return False
   for k, v in s1.attributes.items():
     if k not in s2.attributes:
@@ -498,6 +548,7 @@ class FutureNode(NodeSchema[DataT]):
     assert not self.list_handler
     assert self.element_type, ('Not a collection. Call make_collection.')
     self.list_handler = handler
+    self.listable = True
 
   def set_post_handler(
       self,
@@ -566,6 +617,7 @@ class AsyncNode(NodeSchema[DataT]):
     assert not self.list_handler
     assert self.element_type, ('Not a collection. Call make_collection.')
     self.list_handler = handler
+    self.listable = True
 
   def set_post_handler(
       self,

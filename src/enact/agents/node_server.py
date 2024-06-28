@@ -1,87 +1,86 @@
-# Copyright 2023 Agentic.AI Corporation.
-"""Node server with control inversion."""
+# Copyright 2024 Agentic.AI Corporation.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+"""A node server that offers a AsyncNode access to a FutureNode."""
 
 from typing import Generic, List, TypeVar
 
-from enact.coroutines import control_inversion
-from enact.coroutines import threaded_async
 from enact.agents import node_api
-from enact.agents import environments
+from enact.coroutines import control_inversion
+from enact.coroutines.threaded_async import Future
 
-ServerT = TypeVar('ServerT', bound='Server')
 
-# Data representation
 DataT = TypeVar('DataT')
-OutT = TypeVar('OutT')
-InT = TypeVar('InT')
 
 
 class Server(Generic[DataT], control_inversion.Server):
-  """A server that drives a SyncNode api from a control inversion client."""
+  """A node server that translates between an AsyncNode and a FutureNode."""
 
-  def __init__(self, node: node_api.FutureNode[DataT]):
-    """Initialize the server with a synchronous node API."""
+  def __init__(self, future_node: node_api.FutureNode[DataT]):
+    """Create a new node server for the given schema."""
     super().__init__()
-    self._node = node
+    self._future_node = future_node
+    self._async_node = future_node.as_async_node()
+    self._setup_handlers(self._async_node)
+    self._client = self.create_client()
+
+  @property
+  def async_node(self) -> node_api.AsyncNode[DataT]:
+    """Return the async node for this server."""
+    return self._async_node
+
+  def _setup_handlers(self, async_node: node_api.AsyncNode[DataT]):
+    """Set all handlers indicated by the schema."""
+    if async_node.get_signature is not None:
+      async_node.get_handler = self._async_get_handler
+    if async_node.post_signature is not None:
+      async_node.post_handler = self._async_post_handler
+    if async_node.listable:
+      async_node.list_handler = self._async_list_handler
+    for child in async_node.attributes.values():
+      self._setup_handlers(child)
+    if async_node.element_type is not None:
+      self._setup_handlers(async_node.element_type)
 
   def _handle_request(
       self,
       request: control_inversion.ExecutionRequest,
-      future: threaded_async.Future):
-    """Handle a post, list or get request."""
-    assert not request.kw_args
-    try:
-      if request.fun == Environment.get:
-        node_id, data = request.args
-        assert isinstance(node_id, node_api.NodeId)
-        self._node.get(node_id, future, data)
-      elif request.fun == Environment.list:
-        node_id, = request.args
-        assert isinstance(node_id, node_api.NodeId)
-        self._node.list(node_id, future)
-      elif request.fun == Environment.post:
-        node_id, data = request.args
-        assert isinstance(node_id, node_api.NodeId)
-        self._node.post(node_id, future, data)
-    except Exception as e:  # pylint: disable=broad-except
-      if not future.done():
-        future.set_exception(e)
+      future: Future):
+    """Handle a control inversion request."""
+    if request.fun == Server._async_get_handler:
+      node_id, data = request.args
+      assert isinstance(node_id, node_api.NodeId)
+      self._future_node.get(node_id, future, data)
+    elif request.fun == Server._async_post_handler:
+      node_id, data = request.args
+      assert isinstance(node_id, node_api.NodeId)
+      self._future_node.post(node_id, future, data)
+    elif request.fun == Server._async_list_handler:
+      node_id, = request.args
+      assert isinstance(node_id, node_api.NodeId)
+      self._future_node.list(node_id, future)
 
-  def update(self):
-    """Handle server events until no new events are available."""
-    self._wait_on_eventloop()
-    while self.process():
-      self._wait_on_eventloop()
+  async def _async_get_handler(
+    self, node_id: node_api.NodeId, data: DataT) -> DataT:
+    """Handle a get request."""
+    return await self._client.execute(Server._async_get_handler, node_id, data)
 
+  async def _async_post_handler(
+    self, node_id: node_api.NodeId, data: DataT) -> DataT:
+    """Handle a post request."""
+    return await self._client.execute(Server._async_post_handler, node_id, data)
 
-class Environment(environments.Environment[DataT]):
-  """Agent environment that uses a control inversion server."""
-
-  def __init__(self, server: Server[DataT]):
-    """Create a new game client."""
-    self._server = server
-    self._ci_client = server.create_client()
-
-  @property
-  def node_schema(self) -> node_api.NodeSchema:
-    """The schema of the client."""
-    # pylint: disable=protected-access
-    return self._server._node
-
-  async def post(
-      self,
-      node_id: node_api.NodeId,
-      data: DataT) -> DataT:
-    """Execute a post request on the server."""
-    return await self._ci_client.execute(Environment.post, node_id, data)
-
-  async def get(
-      self,
-      node_id: node_api.NodeId,
-      data: DataT) -> DataT:
-    """Execute a get request on the server."""
-    return await self._ci_client.execute(Environment.get, node_id, data)
-
-  async def list(self, node_id: node_api.NodeId) -> List[node_api.NodeId]:
-    """Execute a list request on the server."""
-    return await self._ci_client.execute(Environment.list, node_id)
+  async def _async_list_handler(
+    self, node_id: node_api.NodeId) -> List[node_api.NodeId]:
+    """Handle a get request."""
+    return await self._client.execute(Server._async_list_handler, node_id)

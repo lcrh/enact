@@ -14,31 +14,27 @@
 """Top level definition of a software agent."""
 
 import dataclasses
-from typing import Generic, List, Optional, TypeVar
+import pprint
+from typing import List, TypeVar
 
 import enact
-
 from enact.agents import environments
 from enact.agents import node_api
 
 
-T = TypeVar('T')
-
-# Data handled by this agent.
 DataT = TypeVar('DataT')
-
 
 @enact.register
 @dataclasses.dataclass
-class Agent(Generic[DataT], enact.Resource):
+class Agent(enact.Resource):
   """An agent, defined as a node API that executes against an environment.
 
   Attributes:
     environment_schema: The node schema for the environment the agent operates
       in. The environment is accessed by the agent_node handlers. These handlers
-      expect that they are executed in the context of the environment client,
-      that is, that the environment client is accessible via
-      node_client.Client.current().
+      expect that they are executed in the context of an appropriate environment
+      client, that is, that the environment client is accessible via
+      environments.Environment.current().
       The environment should expose passive observations as get handlers and
       actions or 'active observations' that may modify the environment as post
       handlers.
@@ -49,45 +45,45 @@ class Agent(Generic[DataT], enact.Resource):
       handler guarantees that the environment is not changed whereas a post
       handler does not.
   """
-  environment_schema: Optional[
-    enact.Ref[node_api.NodeSchema[DataT]]]
-  agent_node: enact.Ref[node_api.AsyncNode[DataT]]
+  name: str
+  environment_schema: node_api.NodeSchema[DataT]
+  agent_handlers: node_api.AsyncNode[DataT]
 
-  async def __call__(
-      self,
-      environment: environments.Environment,
-      *args: DataT, **kwargs: DataT) -> DataT:
-    """Run the agent. This requires a post handler to be set at agent root."""
-    return await self.post('', environment, *args, **kwargs)
+  def _check_environment(self, environment: environments.Environment[DataT]):
+    """Check that the environment is compatible with the agent."""
+    if not node_api.is_subschema(
+        self.environment_schema, environment.node_schema):
+      raise ValueError(
+        f'Environment schema does not match agent schema: '
+        f'\n{pprint.pformat(environment.node_schema)}'
+        f'\nvs.'
+        f'\n{pprint.pformat(self.environment_schema)}')
 
   async def post(
       self,
-      node_id_like: node_api.NodeIdLike,
-      environment: environments.Environment,
-      arg: Optional[DataT]=None) -> DataT:
-    """Run an agent's post handler at a given ID."""
-    if not isinstance(node_id_like, node_api.NodeId):
-      node_id_like = node_api.NodeId(node_id_like)
+      environment: environments.Environment[DataT],
+      node_id: node_api.NodeIdLike,
+      data: DataT) -> DataT:
+    """Issue a post request to the agent against the specified environment."""
+    self._check_environment(environment)
     with environment:
-      return await self.agent_node().post(node_id_like, arg)
+      return await self.agent_handlers.post(node_api.NodeId(node_id), data)
 
   async def get(
       self,
-      node_id_like: node_api.NodeIdLike,
-      environment: environments.Environment,
-      arg: Optional[DataT]=None) -> DataT:
-    """Run an agent's get handler at a given ID."""
-    if not isinstance(node_id_like, node_api.NodeId):
-      node_id_like = node_api.NodeId(node_id_like)
+      environment: environments.Environment[DataT],
+      node_id: node_api.NodeIdLike,
+      data: DataT) -> DataT:
+    """Issue a get request to the agent against the specified environment."""
+    self._check_environment(environment)
     with environment:
-      return await self.agent_node().get(node_id_like, arg)
+      return await self.agent_handlers.get(node_api.NodeId(node_id), data)
 
   async def list(
       self,
-      node_id_like: node_api.NodeIdLike,
-      environment: environments.Environment) -> List[node_api.NodeId]:
-    """Run an agent's list handler at a given ID."""
-    if not isinstance(node_id_like, node_api.NodeId):
-      node_id_like = node_api.NodeId(node_id_like)
+      environment: environments.Environment[DataT],
+      node_id: node_api.NodeIdLike) -> List[node_api.NodeId]:
+    """Issue a list request to the agent against the specified environment."""
+    self._check_environment(environment)
     with environment:
-      return await self.agent_node().list(node_id_like)
+      return await self.agent_handlers.list(node_api.NodeId(node_id))

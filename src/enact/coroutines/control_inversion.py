@@ -127,10 +127,10 @@ class Server:
     task = self._runner.create_task(awaitable)
     # Wait for the event loop to be caught up, to ensure that any requests
     # issued by the task have been pushed onto the queue.
-    self._wait_on_eventloop()
+    self.wait_on_eventloop()
     return task
 
-  def _wait_on_eventloop(self):
+  def wait_on_eventloop(self):
     """Wait for the next eventloop iteration."""
     self._runner.wait_for_next_eventloop_iteration()
 
